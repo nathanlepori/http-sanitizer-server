@@ -1,0 +1,18 @@
+Metadata-Version: 1.1
+Name: pyicap
+Version: 1.0b1
+Summary: A framework for writing ICAP servers
+Home-page: https://github.com/netom/pyicap/
+Author: FÁBIÁN Tamás László
+Author-email: giganetom@gmail.com
+License: BSD License
+Download-URL: https://github.com/netom/pyicap/tarball/1.0b1#egg=pyicap-1.0b1
+Description: UNKNOWN
+Platform: OS Independent
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Plugins
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: BSD License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python
+Classifier: Topic :: Software Development :: Libraries
