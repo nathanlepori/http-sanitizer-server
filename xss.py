@@ -1,8 +1,8 @@
 import urllib.parse
 
-QUERY_VAR = 'a'
+QUERY_VAR = 'username'
 JS_SCRIPT = 'xss.js'
-VICTIM_URL = 'http://192.168.1.4/index.php'
+VICTIM_URL = 'http://192.168.30.100/login.php'
 
 with open(JS_SCRIPT, 'r') as xss:
 	js = xss.read()
