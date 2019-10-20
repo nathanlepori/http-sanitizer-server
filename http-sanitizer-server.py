@@ -1,15 +1,17 @@
-import inspect
 import logging
 import re
+import pymysql
 
 from logging import Formatter, Logger, StreamHandler
 from socketserver import ThreadingMixIn
 from typing import Dict, Union, List, Pattern
-from urllib.parse import urlparse, parse_qs, ParseResult
-
+from urllib.parse import urlparse, urlencode, parse_qs, quote, unquote, ParseResult
 from bs4 import BeautifulSoup, Tag, ResultSet
 from pyicap import ICAPServer, BaseICAPRequestHandler
 from difflib import SequenceMatcher, Match
+
+# Can be URL encoded, HTML or raw (for unsupported MIME types)
+ParsedBody = Union[Dict[str, List[str]], BeautifulSoup, str]
 
 
 class HttpSanitizerServer(ThreadingMixIn, ICAPServer):
@@ -121,8 +123,7 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
 
     __url: ParseResult = None
     __query_string: Dict[str, str] = None
-    __body: str = None
-    __dom: BeautifulSoup = None
+    __parsed_body: ParsedBody = None
 
     def _get_url(self) -> ParseResult:
         if self.__url:
@@ -140,14 +141,7 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
                                {k: v for k, v in query_string.items()}.items()}
         return self.__query_string
 
-    def _get_body(self) -> str:
-        # TODO: Test
-        # If modifications to the DOM have been made, write them back as string
-        if self.__dom:
-            self.__body = str(self.__dom)
-
-        if self.__body:
-            return self.__body
+    def _read_body(self) -> str:
         body: bytes = b''
         while True:
             chunk = self.read_chunk()
@@ -155,61 +149,116 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
                 break
             body += chunk
 
-        self.__body = body.decode(self.get_encoding())
-        return self.__body
+        return body.decode(self.get_encoding())
 
-    def _get_dom(self) -> BeautifulSoup:
-        # TODO: Test
-        # If modifications to the body have been made, write them back
-        if self.__body:
-            self.__dom = BeautifulSoup(self.__body)
+    def _parse_body(self, body: str):
+        if self.body_is_urlencoded():
+            self.__parsed_body = parse_qs(body)
+        elif self.body_is_html():
+            self.__parsed_body = BeautifulSoup(body)
+        else:
+            # Raw or unsupported
+            self.__parsed_body = body
 
-        if self.__dom:
-            return self.__dom
-        self.__dom = BeautifulSoup(self.body)
-        return self.__dom
+    def _get_parsed_body(self) -> ParsedBody:
+        if self.__parsed_body:
+            return self.__parsed_body
+        body = self._read_body()
+        self._parse_body(body)
+        return self.__parsed_body
+
+    def _get_body(self) -> str:
+        if self.body_is_urlencoded():
+            # Return encoded form data, preserving special characters (like "&")
+            return urlencode(self.parsed_body, doseq=True)
+        elif self.body_is_html():
+            # Return string representation of DOM
+            return str(self.parsed_body)
+        else:
+            return self.parsed_body
 
     def _set_body(self, body: str):
-        self.__body = body
+        self._parse_body(body)
 
-    def get_encoding(self) -> str:
+    def get_content_type(self, request: bool = None):
+        """
+        Gets the content type of the current request/response. Which one to choose is determined by the ICAP command
+        that's being executed, but can be changed by settings the request parameter. Returns None if Content-Type is not
+        set.
+        :return:
+        """
+        if self.command == b'REQMOD' or request:
+            if b'content-type' in self.enc_req_headers:
+                return self.enc_req_headers[b'content-type'][0].split(b'; ')[0]
+        elif self.command == b'RESPMOD':
+            if b'content-type' in self.enc_res_headers:
+                return self.enc_res_headers[b'content-type'][0].split(b'; ')[0]
+
+    def body_is_urlencoded(self, request: bool = None):
+        return self.get_content_type(request) == b'application/x-www-form-urlencoded'
+
+    def body_is_html(self, request: bool = None) -> bool:
+        return self.get_content_type(request) == b'text/html'
+
+    def get_encoding(self, request: bool = None) -> str:
         """
         Try to get encoding from Content-Type header and default to UTF-8 if not found.
         :return: The encoding.
         """
         encoding = b'utf-8'
-        if b'content-type' in self.enc_res_headers:
-            # Get the charset portion of the content type if present
-            content_type_parts = self.enc_res_headers[b'content-type'][0].split(b'; ')
-            if len(content_type_parts) > 1:
-                encoding = content_type_parts[1].split(b'=')[1].lower()
-        return encoding.decode()
-
-    def res_is_html(self):
-        if b'content-type' in self.enc_res_headers:
-            return self.enc_res_headers[b'content-type'][0].split(b'; ')[0] == b'text/html'
+        if self.command == b'REQMOD' or request:
+            if b'content-type' in self.enc_req_headers:
+                # Get the charset portion of the content type if present
+                content_type_parts = self.enc_req_headers[b'content-type'][0].split(b'; ')
+                if len(content_type_parts) > 1:
+                    encoding = content_type_parts[1].split(b'=')[1].lower()
         else:
-            return False
+            if b'content-type' in self.enc_res_headers:
+                # Get the charset portion of the content type if present
+                content_type_parts = self.enc_res_headers[b'content-type'][0].split(b'; ')
+                if len(content_type_parts) > 1:
+                    encoding = content_type_parts[1].split(b'=')[1].lower()
+        return encoding.decode()
 
     def get_url_path_parts(self):
         return list(filter(lambda p: len(p) != 0, self.url.path.split('/')))
 
-    def send_body(self):
+    def send(self) -> None:
+        """
+        Sends the ICAP response back to the HTTP client. Calling this always copies headers and body, if any, adjusting
+        the Content-Length header. Since this server only handles body adaptation so far, headers and status are copied.
+        """
         self.set_icap_response(200)
 
-        if self.enc_res_status is not None:
-            self.set_enc_status(b' '.join(self.enc_res_status))
+        if self.command == b'REQMOD':
+            # Copy request status
+            if self.enc_req is not None:
+                self.set_enc_request(b' '.join(self.enc_req))
 
-        for h in self.enc_res_headers:
-            if h == b'content-length':
-                # Fuck Python 3
-                self.set_enc_header(h, to_bytes(len(self.body)))
-            else:
+            # Copy request headers
+            for h in self.enc_req_headers:
+                for v in self.enc_req_headers[h]:
+                    self.set_enc_header(h, v)
+        elif self.command == b'RESPMOD':
+            # Copy response status
+            if self.enc_res_status is not None:
+                self.set_enc_status(b' '.join(self.enc_res_status))
+
+            # Copy response headers
+            for h in self.enc_res_headers:
                 for v in self.enc_res_headers[h]:
                     self.set_enc_header(h, v)
 
-        self.send_headers(True)
-        self.send_chunk(self.body.encode(self.get_encoding()))
+        if self.has_body or len(self.body) > 0:
+            # Request has a body, either added by the service or from the original request/response
+            # Add or update the Content-Length header
+            self.set_enc_header(b'content-length', to_bytes(len(self.body)))
+
+            self.send_headers(True)
+            self.send_chunk(self.body.encode(self.get_encoding()))
+            self.send_chunk(b'')
+        else:
+            self.send_headers(False)
 
     def find_reflected_content(self) -> List[str]:
         matches = []
@@ -237,7 +286,7 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
 
     def find_malicious_attributes(self, malicious_strings: List[str]):
         events_selector = ','.join(map(lambda s: f'[{s}]', self.__HTML_EVENTS))
-        tags_with_events: List[Tag] = self.dom.select(events_selector)
+        tags_with_events: List[Tag] = self.parsed_body.select(events_selector)
 
         for tag in tags_with_events:
             for attr, val in tag.attrs.items():
@@ -251,28 +300,61 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         :return:
         """
         # Filter all script tag strings
-        script_tags = list(filter(lambda s: re.match(r'<script>.*</script>', s, flags=re.IGNORECASE), malicious_strings))
+        script_tags = list(
+            filter(lambda s: re.match(r'<script>.*</script>', s, flags=re.IGNORECASE), malicious_strings))
         # Extract the JS source code from them
         script_tags_code = list(map(lambda s: BeautifulSoup(s).text, script_tags))
 
         blacklisted_tags: List[Tag] = []
         for code in script_tags_code:
             # Find corresponding tag in DOM
-            tags = self.dom.find_all('script', text=code)
+            tags = self.parsed_body.find_all('script', text=code)
             # Remove the tag from the source code and add it to the blacklisted tags list
             for tag in tags:
                 blacklisted_tags.append(tag.extract())
         return blacklisted_tags
 
     def patch_reflection_xss(self):
+        if not self.body_is_html():
+            return False
         malicious_strings = self.find_reflected_content()
         blacklisted_tags = self.patch_script_tags(malicious_strings)
-        self.__logger.info(f'Found at least one malicious tag: {str(blacklisted_tags)}')
+        if len(blacklisted_tags) > 0:
+            self.__logger.info(f'Found at least one malicious tag: {str(blacklisted_tags)}')
+            return True
+        return False
+
+    def is_post_request(self):
+        return self.enc_req[0] == b'POST'
+
+    def sanitize_request_body(self):
+        if self.is_post_request() and self.has_body:
+            if self.body_is_urlencoded():
+                escaped = False
+                for k in self.parsed_body:
+                    for i, v in enumerate(self.parsed_body[k]):
+                        if not is_escaped(v):
+                            escaped_v = pymysql.escape_string(v)
+                            if escaped_v != v:
+                                # If anything was actually escaped
+                                self.parsed_body[k][i] = escaped_v
+                                escaped = True
+                if not escaped:
+                    return False
+                return True
+
+    def inject_sanitizer_banner(self):
+        body: Tag = self.parsed_body.find('body')
+        banner = self.parsed_body.new_tag('div', attrs={
+            'style': 'width: 100%; height: 50px; padding-top: 10px; text-align: center; background-color: yellow;'
+        })
+        banner.string = 'A malicious script was removed by HTTP Sanitizer Server.'
+        body.insert_before(banner)
 
     url: ParseResult = property(_get_url)
     query_string: Dict[str, str] = property(_get_query_string)
     body: str = property(_get_body, _set_body)
-    dom: BeautifulSoup = property(_get_dom)
+    parsed_body: ParsedBody = property(_get_parsed_body)
 
     # ---------- SERVICES ---------- #
     def default_OPTIONS(self, mode: bytes):
@@ -286,11 +368,20 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         self.default_OPTIONS(b'RESPMOD')
 
     def xss_auditor_RESPMOD(self):
-        if not self.res_is_html():
-            self.no_adaptation_required()
+        if self.patch_reflection_xss():
+            self.inject_sanitizer_banner()
+            self.send()
             return
-        self.patch_reflection_xss()
-        self.send_body()
+        self.no_adaptation_required()
+
+    def body_sanitizer_OPTIONS(self):
+        self.default_OPTIONS(b'REQMOD')
+
+    def body_sanitizer_REQMOD(self):
+        if self.sanitize_request_body():
+            self.send()
+            return
+        self.no_adaptation_required()
 
 
 def to_bytes(value: Union[str, int, float], encoding='utf-8'):
@@ -303,6 +394,10 @@ def to_bytes(value: Union[str, int, float], encoding='utf-8'):
 def find_longest_match(a: str, b: str) -> Match:
     seq_matcher = SequenceMatcher(None, a, b)
     return seq_matcher.find_longest_match(0, len(a), 0, len(b))
+
+
+def is_escaped(value: str) -> bool:
+    return bool(re.match(r'\\[0\\nrZ"\']', value))
 
 
 if __name__ == '__main__':
