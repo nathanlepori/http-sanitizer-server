@@ -1,14 +1,14 @@
 import logging
 import re
-import pymysql
-
+from difflib import SequenceMatcher, Match
 from logging import Formatter, Logger, StreamHandler
 from socketserver import ThreadingMixIn
-from typing import Dict, Union, List, Pattern
-from urllib.parse import urlparse, urlencode, parse_qs, quote, unquote, ParseResult
-from bs4 import BeautifulSoup, Tag, ResultSet
+from typing import Dict, Union, List, Pattern, Set
+from urllib.parse import urlparse, urlencode, parse_qs, ParseResult
+
+import pymysql
+from bs4 import BeautifulSoup, Tag
 from pyicap import ICAPServer, BaseICAPRequestHandler
-from difflib import SequenceMatcher, Match
 
 # Can be URL encoded, HTML or raw (for unsupported MIME types)
 ParsedBody = Union[Dict[str, List[str]], BeautifulSoup, str]
@@ -42,44 +42,48 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         r'javascript:.*',
     ]
 
-    __HTML_EVENTS: List[str] = [
-        'onafterprint',
-        'onbeforeprint',
-        'onbeforeunload',
-        'onerror',
-        'onhashchange',
-        'onload',
-        'onmessage',
-        'onoffline',
-        'ononline',
-        'onpagehide',
-        'onpageshow',
-        'onpopstate',
-        'onresize',
-        'onstorage',
-        'onunload',
-        'onblur',
-        'onchange',
-        'oncontextmenu',
-        'onfocus',
+    # TODO: Review this list (http://help.dottoro.com/ljfvvdnm.php)
+    __HTML_EVENTS: Set[str] = [
+        'onbeforecopy',
+        'onbeforecut',
+        'onbeforepaste',
+        'oncopy',
+        'oncut',
         'oninput',
-        'oninvalid',
-        'onreset',
-        'onsearch',
-        'onselect',
-        'onsubmit',
         'onkeydown',
         'onkeypress',
         'onkeyup',
+        'onpaste',
+        'textInput',
+        'onabort',
+        'onbeforeunload',
+        'onhashchange',
+        'onload',
+        'onoffline',
+        'ononline',
+        'onreadystatechange',
+        'onreadystatechange',
+        'onreadystatechange',
+        'onstop',
+        'onunload',
+        'onreset',
+        'onsubmit',
         'onclick',
+        'oncontextmenu',
         'ondblclick',
+        'onlosecapture',
+        'onmouseenter',
         'onmousedown',
+        'onmouseleave',
         'onmousemove',
         'onmouseout',
         'onmouseover',
         'onmouseup',
         'onmousewheel',
-        'onwheel',
+        'onscroll',
+        'onmove',
+        'onmoveend',
+        'onmovestart',
         'ondrag',
         'ondragend',
         'ondragenter',
@@ -87,36 +91,69 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         'ondragover',
         'ondragstart',
         'ondrop',
-        'onscroll',
-        'oncopy',
-        'oncut',
-        'onpaste',
-        'onabort',
-        'oncanplay',
-        'oncanplaythrough',
-        'oncuechange',
-        'ondurationchange',
-        'onemptied',
-        'onended',
+        'onresize',
+        'onresizeend',
+        'onresizestart',
+        'onactivate',
+        'onbeforeactivate',
+        'onbeforedeactivate',
+        'onbeforeeditfocus',
+        'onblur',
+        'ondeactivate',
+        'onfocus',
+        'onfocusin',
+        'onfocusout',
+        'oncontrolselect',
+        'onselect',
+        'onselectionchange',
+        'onselectstart',
+        'onafterprint',
+        'onbeforeprint',
+        'onhelp',
         'onerror',
-        'onloadeddata',
-        'onloadedmetadata',
-        'onloadstart',
-        'onpause',
-        'onplay',
-        'onplaying',
-        'onprogress',
-        'onratechange',
-        'onseeked',
-        'onseeking',
-        'onstalled',
-        'onsuspend',
-        'ontimeupdate',
-        'onvolumechange',
-        'onwaiting',
-        'ontoggle',
-        'href'
+        'onerror',
+        'onerrorupdate',
+        'onafterupdate',
+        'onbeforeupdate',
+        'oncellchange',
+        'ondataavailable',
+        'ondatasetchanged',
+        'ondatasetcomplete',
+        'onrowenter',
+        'onrowexit',
+        'onrowsdelete',
+        'onrowsinserted',
+        'onbounce',
+        'onfinish',
+        'onstart',
+        'onchange',
+        'onfilterchange',
+        'onpropertychange',
+        'onsearch',
+        'onmessage',
+        'CheckboxStateChange',
+        'DOMActivate',
+        'DOMAttrModified',
+        'DOMCharacterDataModified',
+        'DOMFocusIn',
+        'DOMFocusOut',
+        'DOMMouseScroll',
+        'DOMNodeInserted',
+        'DOMNodeInsertedIntoDocument',
+        'DOMNodeRemoved',
+        'DOMNodeRemovedFromDocument',
+        'DOMSubtreeModified',
+        'dragdrop',
+        'dragexit',
+        'draggesture',
+        'overflow',
+        'overflowchanged',
+        'RadioStateChange',
+        'underflow',
     ]
+
+    # Minimum size for content reflected from URL or query string to be considered suspicious
+    __REFLECTED_CONTENT_MIN_SIZE = 5
 
     # Get logger from outer scope
     __logger: Logger = logging.getLogger(HttpSanitizerServer.__name__)
@@ -155,7 +192,7 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         if self.body_is_urlencoded():
             self.__parsed_body = parse_qs(body)
         elif self.body_is_html():
-            self.__parsed_body = BeautifulSoup(body)
+            self.__parsed_body = BeautifulSoup(body, features='lxml')
         else:
             # Raw or unsupported
             self.__parsed_body = body
@@ -265,13 +302,13 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
 
         # Try to find reflected content in URL
         for part in self.get_url_path_parts():
-            if self.body.find(part):
+            if find_longest_match(self.body, part).size >= self.__REFLECTED_CONTENT_MIN_SIZE:
                 matches.append(part)
 
         # Try to find a match in the query string
         for v in self.query_string.values():
             for vv in v:
-                if self.body.find(vv):
+                if find_longest_match(self.body, vv).size >= self.__REFLECTED_CONTENT_MIN_SIZE:
                     matches.append(vv)
         return matches
 
@@ -284,15 +321,36 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
     def get_malicious_matches(self, matches: List[str]):
         return list(filter(self.is_malicious, matches))
 
-    def find_malicious_attributes(self, malicious_strings: List[str]):
+    def patch_attributes(self, malicious_strings: List[str]):
+        # First patch events (can execute JS when triggered)
         events_selector = ','.join(map(lambda s: f'[{s}]', self.__HTML_EVENTS))
         tags_with_events: List[Tag] = self.parsed_body.select(events_selector)
 
+        blacklisted_attrs = {}
         for tag in tags_with_events:
-            for attr, val in tag.attrs.items():
+            # Copy into list to be able to delete while iterating
+            for attr in list(tag.attrs):
                 if attr in self.__HTML_EVENTS:
-                    if val in malicious_strings:
-                        self.__logger.info('Found malicious string')
+                    v = tag.attrs[attr]
+                    if v in malicious_strings:
+                        del tag.attrs[attr]
+                        blacklisted_attrs[attr] = v
+
+        # Then patch these two attributes (can execute JS when prefixed with "javascript:", i.e. <a>, <iframe>, ...)
+        src_attributes = ['href', 'src']
+        src_selector = ','.join(map(lambda s: f'[{s}]', src_attributes))
+        tags_with_src = self.parsed_body.select(src_selector)
+        for tag in tags_with_src:
+            # Copy into list to be able to delete while iterating
+            for attr in list(tag.attrs):
+                if attr in src_attributes:
+                    v = tag.attrs[attr]
+                    # Only filter if they contain the "javascript:" prefix
+                    if 'javascript:' in v and (v in malicious_strings or f'javascript:{v}'):
+                        del tag.attrs[attr]
+                        blacklisted_attrs[attr] = v
+
+        return blacklisted_attrs
 
     def patch_script_tags(self, malicious_strings: List[str]) -> List[Tag]:
         """
@@ -301,9 +359,9 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         """
         # Filter all script tag strings
         script_tags = list(
-            filter(lambda s: re.match(r'<script>.*</script>', s, flags=re.IGNORECASE), malicious_strings))
+            filter(lambda s: re.match(r'.*<script>.*</script>.*', s, flags=re.IGNORECASE), malicious_strings))
         # Extract the JS source code from them
-        script_tags_code = list(map(lambda s: BeautifulSoup(s).text, script_tags))
+        script_tags_code = list(map(lambda s: BeautifulSoup(s, features='lxml').find('script').text, script_tags))
 
         blacklisted_tags: List[Tag] = []
         for code in script_tags_code:
@@ -317,12 +375,18 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
     def patch_reflection_xss(self):
         if not self.body_is_html():
             return False
-        malicious_strings = self.find_reflected_content()
-        blacklisted_tags = self.patch_script_tags(malicious_strings)
+        matches = self.find_reflected_content()
+        blacklisted_tags = self.patch_script_tags(matches)
+        blacklisted_attrs = self.patch_attributes(matches)
+
+        patched = False
         if len(blacklisted_tags) > 0:
             self.__logger.info(f'Found at least one malicious tag: {str(blacklisted_tags)}')
-            return True
-        return False
+            patched = True
+        if len(blacklisted_attrs) > 0:
+            self.__logger.info(f'Found at least one malicious attribute: {str(blacklisted_attrs)}')
+            patched = True
+        return patched
 
     def is_post_request(self):
         return self.enc_req[0] == b'POST'
@@ -348,8 +412,11 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         banner = self.parsed_body.new_tag('div', attrs={
             'style': 'width: 100%; height: 50px; padding-top: 10px; text-align: center; background-color: yellow;'
         })
-        banner.string = 'A malicious script was removed by HTTP Sanitizer Server.'
-        body.insert_before(banner)
+        banner.string = 'Some malicious content was removed by HTTP Sanitizer Server.'
+        if body:
+            body.insert_before(banner)
+        else:
+            self.parsed_body.insert(0, banner)
 
     url: ParseResult = property(_get_url)
     query_string: Dict[str, str] = property(_get_query_string)
