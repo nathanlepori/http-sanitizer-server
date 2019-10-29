@@ -42,7 +42,6 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         r'javascript:.*',
     ]
 
-    # TODO: Review this list (http://help.dottoro.com/ljfvvdnm.php)
     __HTML_EVENTS: Set[str] = [
         'onbeforecopy',
         'onbeforecut',
@@ -357,6 +356,7 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         Removes injected script tags from the DOM
         :return:
         """
+        # TODO: Patch reflected script tags where the tag itself is rendered server side
         # Filter all script tag strings
         script_tags = list(
             filter(lambda s: re.match(r'.*<script>.*</script>.*', s, flags=re.IGNORECASE), malicious_strings))
