@@ -1,8 +1,20 @@
 # HTTP Sanitizer Server
 ## Installation
-This software doesn't need to be installed. Just run the executable for the system you are using. No support for 
-execution in the background is currently offered.
+1. Install virtualenv (optional)
+```
+# Windows
+py -m venv ./venv
+# Linux
+venv ./venv
+```
+2. Install dependencies
 
+`pip install -r requirements.txt`
+3. Start the server
+
+`python http-sanitizer-server.py`
+
+Note: this software only supports Python 3.
 ## Squid cache configuration
 Configure Squid cache to support the two ICAP services offered by this software. The server is running on port 13440 
 by default. The following sample configuration is provided.
