@@ -10,6 +10,7 @@ venv ./venv
 2. Install dependencies
 
 `pip install -r requirements.txt`
+
 3. Start the server
 
 `python http-sanitizer-server.py`
