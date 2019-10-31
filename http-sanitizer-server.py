@@ -357,19 +357,24 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         :return:
         """
         # TODO: Patch reflected script tags where the tag itself is rendered server side
-        # Filter all script tag strings
+        # Filter all strings where the script tag is injected along with the code
         script_tags = list(
             filter(lambda s: re.match(r'.*<script>.*</script>.*', s, flags=re.IGNORECASE), malicious_strings))
         # Extract the JS source code from them
         script_tags_code = list(map(lambda s: BeautifulSoup(s, features='lxml').find('script').text, script_tags))
 
+        # Find all remaining strings, suspected to be code and merge the code extracted from the script tags
+        malicious_code = [s for s in malicious_strings if s not in script_tags]
+        malicious_code.extend(script_tags_code)
+
         blacklisted_tags: List[Tag] = []
-        for code in script_tags_code:
-            # Find corresponding tag in DOM
-            tags = self.parsed_body.find_all('script', text=code)
+        for code in malicious_code:
+            # Find corresponding tag in DOM (containing the possibly injected code)
+            tags = self.parsed_body.find_all('script', text=lambda text: code in text)
             # Remove the tag from the source code and add it to the blacklisted tags list
             for tag in tags:
                 blacklisted_tags.append(tag.extract())
+
         return blacklisted_tags
 
     def patch_reflection_xss(self):
@@ -412,7 +417,9 @@ class HttpSanitizerHandler(BaseICAPRequestHandler):
         banner = self.parsed_body.new_tag('div', attrs={
             'style': 'width: 100%; height: 50px; padding-top: 10px; text-align: center; background-color: yellow;'
         })
-        banner.string = 'Some malicious content was removed by HTTP Sanitizer Server.'
+        banner.string = 'Some malicious content was removed by HTTP Sanitizer Server. Contact the site admin to ' \
+                        'report the incident. Be sure to include detailed information about what happened. You may ' \
+                        'close this browser tab, as it has been compromised and may be dangerous.'
         if body:
             body.insert_before(banner)
         else:
