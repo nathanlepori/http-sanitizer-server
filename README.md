@@ -1,4 +1,12 @@
 # HTTP Sanitizer Server
+## Goal of the software
+This software helps protecting against the most common types of web attacks, such as reflection XSS and SQL 
+injection. It acts as a middleware layer between a web server and the user's browser to filter malicious content 
+present in the traffic between both parts. This program is not supposed to replace good programming practices, but 
+rather as an additional security layer websites which are still vulnerable to the aforementioned attacks.
+
+Squid cache is required to run this software: more information can be found [here](http://www.squid-cache.org/).
+
 ## Usage
 1. Install Python
 
