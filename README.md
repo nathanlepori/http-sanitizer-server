@@ -1,6 +1,7 @@
 # HTTP Sanitizer Server
 ## Usage
-1. Install Python  
+1. Install Python
+
 Make sure Python 3 is installed on your system.
 
 ```
