@@ -1,7 +1,6 @@
 # HTTP Sanitizer Server
 ## Usage
-1. Install Python
-
+1. Install Python  
 Make sure Python 3 is installed on your system.
 
 ```
@@ -46,7 +45,7 @@ adaptation_access xss_auditor allow all
 icap_service body_sanitizer reqmod_precache bypass=off icap://127.0.0.1:13440/body_sanitizer
 adaptation_access body_sanitizer allow all
 ```
-⚠ Restarting Squid cache may be needed after changing the configuration.
+⚠ Restarting Squid cache may be needed after changing the configuration.  
 ⚠ Make sure HTTP Sanitizer Server is already running before restarting Squid, or the connection may sometimes fail.
 
 Of course Squid cache and HTTP Sanitizer Server can be run on two different hosts by providing a different IP/domain 
