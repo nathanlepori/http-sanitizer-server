@@ -1,6 +1,6 @@
 import urllib.parse
 
-QUERY_VAR = 'username'
+QUERY_VAR = 'a'
 JS_SCRIPT = 'xss.js'
 VICTIM_URL = 'http://192.168.30.100/login.php'
 
