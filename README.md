@@ -31,7 +31,7 @@ http_sanitizer_server.cmd
 ./http_sanitizer_server.sh
 ```
 
-Note: this software only supports Python 3.
+⚠ This software only supports Python 3.
 ## Squid cache configuration
 Configure Squid cache to support the two ICAP services offered by this software. The server is running on port 13440 
 by default. The following sample configuration is provided.
